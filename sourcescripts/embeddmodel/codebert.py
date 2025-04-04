@@ -1,5 +1,4 @@
 
-
 import os
 import sys
 import pandas as pd
@@ -53,12 +52,15 @@ class BigVulDatasetNLPDataModule(pl.LightningDataModule):
         self.batch_size = batch_size
 
     def train_dataloader(self):
+        """Load the dataset for training"""
         return DataLoader(self.train, shuffle=True, batch_size=self.batch_size, num_workers=15)
 
     def val_dataloader(self):
+        """Load the dataset for validation"""
         return DataLoader(self.val, batch_size=self.batch_size, num_workers=15)
 
     def test_dataloader(self):
+        """Load the dataset for testting"""
         return DataLoader(self.test, batch_size=self.batch_size, num_workers=15)
 
 # Lightning Module for CodeBERT
@@ -136,7 +138,7 @@ if __name__ == "__main__":
     trainer = pl.Trainer(
         accelerator="auto",
         devices="auto",
-        max_epochs=10,
+        max_epochs=2, # 10 # the good is 5
         callbacks=[checkpoint_callback]
     )
     
@@ -152,39 +154,55 @@ if __name__ == "__main__":
         metrics_df = pd.DataFrame(metrics_dict)
         c_path = f"{utls.outputs_dir()}/codebert_metrics.csv"
         metrics_df.to_csv(c_path, index=False)
-        print(f"Metrics saved to {c_path}")
-        model_path = f"{embedmodel}/CodeBERT/lit_codebert_model.pt"
-        torch.save(model.state_dict(), model_path)
+        print(f"Codebert metrics saved to {c_path}")
+        codebert_path = embedmodel
+        model.bert.save_pretrained(codebert_path)
+        model.tokenizer = AutoTokenizer.from_pretrained("microsoft/codebert-base")
+        model.tokenizer.save_pretrained(codebert_path)
+
     else:
         print(f"A finetune CodeBERT model exit. \nLoading from a pre-trained.")
 
-    # Load Model for Text Embedding
-    model_path = f"{embedmodel}/CodeBERT/lit_codebert_model.pt"
-    loaded_model = LitCodeBERT()
-    loaded_model.load_state_dict(torch.load(model_path))
-    loaded_model.eval()
-    
-    
-    
-    
-    
-    
-    tokenizer = AutoTokenizer.from_pretrained("microsoft/codebert-base")
-    text = """# Load Word2Vec Model for Embedding
-loaded_model = Word2Vec.load("word2vec_model.bin")
-text = "the pare de papa morarac"
-words = text.split()
-embedding = np.mean([loaded_model.wv[word] for word in words if word in loaded_model.wv], axis=0)
-if embedding is None:
-    embedding = np.zeros(100)  # Default to zero vector if no words match
-print("Generated embedding:", embedding)"""
-    
-    
-    
-    
 
+# Load the fine-tuned model for embedding
+class CodeBertEmbedder:
+    def __init__(self, model_path):
+        
+        if os.path.exists(model_path):
+            print("Loading CodeBERT for embedding from cache ...")
+            self.tokenizer = AutoTokenizer.from_pretrained(model_path)
+            self.model = AutoModel.from_pretrained(model_path).to("cuda" if torch.cuda.is_available() else "cpu")
+        else:   
+            cache_dir = utls.get_dir(f"{cache_dir()}/codebert_model")
+            print("[Info] Loading Codebert...")
+            self.tokenizer = AutoTokenizer.from_pretrained(
+                "microsoft/codebert-base", cache_dir=cache_dir
+            )
+            self.model = AutoModel.from_pretrained(
+                "microsoft/codebert-base", cache_dir=cache_dir
+            )
+            self._dev = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+            self.model.to(self._dev)
     
-    encoded_input = tokenizer(text, return_tensors="pt", padding=True, truncation=True)
-    with torch.no_grad():
-        embeddings = loaded_model(encoded_input["input_ids"], encoded_input["attention_mask"]).cpu()
-    print(f"Text Embeddings: {embeddings}")
+    def embed(self, text):
+        tokens = self.tokenizer(text, padding=True, truncation=True, return_tensors="pt").to(self.model.device)
+        
+        with torch.no_grad():
+            return self.model(tokens["input_ids"], tokens["attention_mask"]).pooler_output
+
+
+# text = """# Load Word2Vec Model for Embedding
+# loaded_model = Word2Vec.load("word2vec_model.bin")
+# text = "the pare de papa morarac"
+# words = text.split()
+# embedding = np.mean([loaded_model.wv[word] for word in words if word in loaded_model.wv], axis=0)
+# if embedding is None:
+#     embedding = np.zeros(100)  # Default to zero vector if no words match
+# print("Generated embedding:", embedding)"""
+# # test functionallity
+# save_path = embedmodel
+# embedder = CodeBertEmbedder(save_path)
+# # -0.1931, -0.6361,  0.2734,  0.7397, -0.8585, -0.8132, -0.1474,  0.8504,
+# # -0.1931, -0.6361,  0.2734,  0.7397, -0.8585, -0.8132, -0.1474,  0.8504,
+# embedding = embedder.embed(text)
+# print(embedding)
